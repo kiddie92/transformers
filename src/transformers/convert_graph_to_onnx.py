@@ -57,6 +57,12 @@ class OnnxConverterArgumentParser(ArgumentParser):
             default="feature-extraction",
         )
         self.add_argument(
+            "--example",
+            type=str,
+            default="This is a sample output",
+            help="test model output. length of token_ids should not equal to number of classes",
+        )
+        self.add_argument(
             "--model",
             type=str,
             required=True,
@@ -158,7 +164,7 @@ def ensure_valid_input(model, tokens, input_names):
     return ordered_input_names, tuple(model_args)
 
 
-def infer_shapes(nlp: Pipeline, framework: str) -> Tuple[List[str], List[str], Dict, BatchEncoding]:
+def infer_shapes(nlp: Pipeline, example_input: str, framework: str) -> Tuple[List[str], List[str], Dict, BatchEncoding]:
     """
     Attempt to infer the static vs dynamic axes for each input and output tensors for a specific model
 
@@ -193,7 +199,7 @@ def infer_shapes(nlp: Pipeline, framework: str) -> Tuple[List[str], List[str], D
         print(f"Found {'input' if is_input else 'output'} {name} with shape: {axes}")
         return axes
 
-    tokens = nlp.tokenizer("This is a sample output", return_tensors=framework)
+    tokens = nlp.tokenizer(example_input, return_tensors=framework)
     seq_len = tokens.input_ids.shape[-1]
     outputs = nlp.model(**tokens) if framework == "pt" else nlp.model(tokens)
     if isinstance(outputs, ModelOutput):
@@ -253,12 +259,13 @@ def load_graph_from_args(
     return pipeline(pipeline_name, model=model, tokenizer=tokenizer, framework=framework, model_kwargs=models_kwargs)
 
 
-def convert_pytorch(nlp: Pipeline, opset: int, output: Path, use_external_format: bool):
+def convert_pytorch(nlp: Pipeline, example_input: str, opset: int, output: Path, use_external_format: bool):
     """
     Export a PyTorch backed pipeline to ONNX Intermediate Representation (IR
 
     Args:
         nlp: The pipeline to be exported
+        example_input: The input example
         opset: The actual version of the ONNX operator set to use
         output: Path where will be stored the generated ONNX model
         use_external_format: Split the model definition from its parameters to allow model bigger than 2GB
@@ -275,7 +282,7 @@ def convert_pytorch(nlp: Pipeline, opset: int, output: Path, use_external_format
     print(f"Using framework PyTorch: {torch.__version__}")
 
     with torch.no_grad():
-        input_names, output_names, dynamic_axes, tokens = infer_shapes(nlp, "pt")
+        input_names, output_names, dynamic_axes, tokens = infer_shapes(nlp, example_input, "pt")
         ordered_input_names, model_args = ensure_valid_input(nlp.model, tokens, input_names)
 
         export(
@@ -292,12 +299,13 @@ def convert_pytorch(nlp: Pipeline, opset: int, output: Path, use_external_format
         )
 
 
-def convert_tensorflow(nlp: Pipeline, opset: int, output: Path):
+def convert_tensorflow(nlp: Pipeline, example_input: str, opset: int, output: Path):
     """
     Export a TensorFlow backed pipeline to ONNX Intermediate Representation (IR
 
     Args:
         nlp: The pipeline to be exported
+        example_input: The input example
         opset: The actual version of the ONNX operator set to use
         output: Path where will be stored the generated ONNX model
 
@@ -318,7 +326,7 @@ def convert_tensorflow(nlp: Pipeline, opset: int, output: Path):
         print(f"Using framework TensorFlow: {tf.version.VERSION}, keras2onnx: {k2ov}")
 
         # Build
-        input_names, output_names, dynamic_axes, tokens = infer_shapes(nlp, "tf")
+        input_names, output_names, dynamic_axes, tokens = infer_shapes(nlp, example_input, "tf")
 
         # Forward
         nlp.model.predict(tokens.data)
@@ -337,6 +345,7 @@ def convert(
     tokenizer: Optional[str] = None,
     use_external_format: bool = False,
     pipeline_name: str = "feature-extraction",
+    example_input: str = "This is a sample output",
     **model_kwargs
 ):
     """
@@ -351,6 +360,7 @@ def convert(
         use_external_format:
             Split the model definition from its parameters to allow model bigger than 2GB (PyTorch only)
         pipeline_name: The kind of pipeline to instantiate (ner, question-answering, etc.)
+        example_input: using input test model
         model_kwargs: Keyword arguments to be forwarded to the model constructor
 
     Returns:
@@ -369,9 +379,9 @@ def convert(
 
     # Export the graph
     if framework == "pt":
-        convert_pytorch(nlp, opset, output, use_external_format)
+        convert_pytorch(nlp, example_input, opset, output, use_external_format)
     else:
-        convert_tensorflow(nlp, opset, output)
+        convert_tensorflow(nlp, example_input, opset, output)
 
 
 def optimize(onnx_model_path: Path) -> Path:
@@ -467,6 +477,7 @@ if __name__ == "__main__":
             args.tokenizer,
             args.use_external_format,
             args.pipeline,
+            args.example,
         )
 
         if args.quantize:
